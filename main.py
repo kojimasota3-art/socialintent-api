@@ -250,7 +250,7 @@ def gemini_proxy():
     if not api_key:
         return jsonify({"error": "GEMINI_API_KEY not configured"}), 500
 
-    model = data.get("model", "gemini-2.0-flash")
+    model = data.get("model", "gemini-3.5-flash")
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
 
     try:
