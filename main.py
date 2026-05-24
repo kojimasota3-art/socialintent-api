@@ -20,11 +20,21 @@ database.init_db()
 # In-memory rate limiter: date_str -> ip -> count
 proxy_usage = {}
 
+import hmac
+import hashlib
+
+LICENSE_SALT = os.environ.get("LICENSE_SIGNING_SALT", "aoi_software_studio_secret_salt")
+
 def generate_license_key():
-    """Generate a license key in the format LS-PREMIUM-XXXX-XXXX"""
+    """Generate a signed license key in the format LS-PREMIUM-XXXX-XXXX"""
     chars = string.ascii_uppercase + string.digits
     part1 = "".join(random.choices(chars, k=4))
-    part2 = "".join(random.choices(chars, k=4))
+    
+    # Calculate signature on the random part
+    h = hmac.new(LICENSE_SALT.encode("utf-8"), part1.encode("utf-8"), hashlib.sha256)
+    sig = h.hexdigest().upper()
+    part2 = sig[:4]
+    
     return f"LS-PREMIUM-{part1}-{part2}"
 
 @app.after_request
@@ -133,14 +143,23 @@ def checkout_session_status():
     if not session:
         return jsonify({"error": "Session not found"}), 404
         
-    payment_status = session.get("payment_status")
+    # Handle properties safely for both mock dict and real Stripe Checkout session object
+    if isinstance(session, dict):
+        payment_status = session.get("payment_status")
+        customer_details = session.get("customer_details") or {}
+        email = session.get("customer_email") or customer_details.get("email") or "unknown@example.com"
+        amount = session.get("amount_total", 580)
+    else:
+        payment_status = getattr(session, "payment_status", None)
+        customer_details = getattr(session, "customer_details", None) or {}
+        email = getattr(session, "customer_email", None) or customer_details.get("email") or "unknown@example.com"
+        amount = getattr(session, "amount_total", 580)
+        
     if payment_status == "paid":
         # Check database
         license_data = database.get_license_by_transaction(session_id)
         if not license_data:
             # If Stripe says paid, but webhook hasn't processed it yet, generate now synchronously
-            email = session.get("customer_email") or session.get("customer_details", {}).get("email") or "unknown@example.com"
-            amount = session.get("amount_total", 580)
             
             database.record_transaction(session_id, email, amount, "completed")
             license_key = generate_license_key()
