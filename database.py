@@ -72,29 +72,61 @@ def get_license_by_transaction(transaction_id):
     conn.close()
     return dict(row) if row else None
 
+import hmac
+import hashlib
+
+LICENSE_SALT = os.environ.get("LICENSE_SIGNING_SALT", "aoi_software_studio_secret_salt")
+
+def verify_cryptographic_license(license_key):
+    """
+    Verify if the license key is cryptographically valid without database access.
+    Format: LS-PREMIUM-XXXX-XXXX where the second part is a hash of the first part.
+    """
+    try:
+        parts = license_key.strip().upper().split("-")
+        if len(parts) != 4 or parts[0] != "LS" or parts[1] != "PREMIUM":
+            return False
+            
+        part1 = parts[2]
+        part2 = parts[3]
+        
+        if len(part1) != 4 or len(part2) != 4:
+            return False
+            
+        h = hmac.new(LICENSE_SALT.encode("utf-8"), part1.encode("utf-8"), hashlib.sha256)
+        expected_sig = h.hexdigest().upper()[:4]
+        
+        return hmac.compare_digest(part2, expected_sig)
+    except Exception:
+        return False
+
 def validate_license(license_key):
-    """Check if the license key exists and is active."""
+    """Check if the license key exists and is active, with cryptographic fallback."""
     conn = get_db_connection()
     cursor = conn.cursor()
-    row = cursor.execute(
-        "SELECT * FROM licenses WHERE license_key = ? AND status = 'active'",
-        (license_key,)
-    ).fetchone()
-    
-    if row:
-        # Update activated_at timestamp if not set yet
-        if not row["activated_at"]:
-            activated_at = datetime.datetime.now().isoformat()
-            cursor.execute(
-                "UPDATE licenses SET activated_at = ? WHERE license_key = ?",
-                (activated_at, license_key)
-            )
-            conn.commit()
-        conn.close()
-        return True
+    try:
+        row = cursor.execute(
+            "SELECT * FROM licenses WHERE license_key = ? AND status = 'active'",
+            (license_key,)
+        ).fetchone()
         
-    conn.close()
-    return False
+        if row:
+            # Update activated_at timestamp if not set yet
+            if not row["activated_at"]:
+                activated_at = datetime.datetime.now().isoformat()
+                cursor.execute(
+                    "UPDATE licenses SET activated_at = ? WHERE license_key = ?",
+                    (activated_at, license_key)
+                )
+                conn.commit()
+            return True
+    except Exception as e:
+        print(f"Database query failed during validation: {e}")
+    finally:
+        conn.close()
+        
+    # Stateless cryptographic fallback
+    return verify_cryptographic_license(license_key)
 
 def record_transaction(transaction_id, email, amount, status):
     """Record payment transaction history."""
